@@ -1,5 +1,5 @@
 {
-  "name": "siwe",
+  "name": "lit-siwe",
   "version": "1.1.3",
   "description": "Sign-In with Ethereum",
   "main": "dist/siwe.js",
@@ -17,7 +17,14 @@
   "license": "Apache-2.0",
   "devDependencies": {
     "@types/jest": "^27.0.2",
-    "ethers": "^5.5.1",
+    "@ethersproject/abi": "^5.5.0",
+    "@ethersproject/bytes": "^5.5.0",
+    "@ethersproject/contracts": "^5.2.0",
+    "@ethersproject/hash": "^5.4.0",
+    "@ethersproject/providers": "^5.2.0",
+    "@ethersproject/strings": "^5.5.0",
+    "@ethersproject/units": "^5.4.0",
+    "@ethersproject/wallet": "^5.2.0",
     "jest": "^27.3.1",
     "lerna": "^4.0.0",
     "nlfurniss-typedoc-plugin-sourcefile-url": "^2.0.0",
@@ -27,7 +34,7 @@
     "typescript": "^4.4.4"
   },
   "dependencies": {
-    "siwe": "file:packages/siwe",
+    "lit-siwe": "file:packages/siwe",
     "siwe-parser": "file:packages/siwe-parser"
   }
 }
