@@ -1,12 +1,17 @@
 import { randomStringForEntropy } from '@stablelib/random';
-import { Contract, providers, Signer } from 'ethers';
+import * as providers from '@ethersproject/providers';
+import { Contract } from '@ethersproject/contracts';
+import { Signer } from '@ethersproject/abstract-signer';
 
 import type { SiweMessage } from './client';
 import { hashMessage } from './ethersCompat';
 
-const EIP1271_ABI = ["function isValidSignature(bytes32 _message, bytes _signature) public view returns (bytes4)"];
-const EIP1271_MAGICVALUE = "0x1626ba7e";
-const ISO8601 = /^(?<date>[0-9]{4}-(0[1-9]|1[012])-(0[1-9]|[12][0-9]|3[01]))[Tt]([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]|60)(.[0-9]+)?(([Zz])|([+|-]([01][0-9]|2[0-3]):[0-5][0-9]))$/;
+const EIP1271_ABI = [
+  'function isValidSignature(bytes32 _message, bytes _signature) public view returns (bytes4)',
+];
+const EIP1271_MAGICVALUE = '0x1626ba7e';
+const ISO8601 =
+  /^(?<date>[0-9]{4}-(0[1-9]|1[012])-(0[1-9]|[12][0-9]|3[01]))[Tt]([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]|60)(.[0-9]+)?(([Zz])|([+|-]([01][0-9]|2[0-3]):[0-5][0-9]))$/;
 
 /**
  * This method calls the EIP-1271 method for Smart Contract wallets
@@ -72,9 +77,12 @@ export const isValidISO8601Date = (inputDate: string): boolean => {
 
   /* Compare remaining fields */
   return inputMatch.groups.date === parsedInputMatch.groups.date;
-}
+};
 
-export const checkInvalidKeys = <T>(obj: T, keys: Array<keyof T>): Array<keyof T> => {
+export const checkInvalidKeys = <T>(
+  obj: T,
+  keys: Array<keyof T>
+): Array<keyof T> => {
   const invalidKeys: Array<keyof T> = [];
   Object.keys(obj).forEach(key => {
     if (!keys.includes(key as keyof T)) {
@@ -82,4 +90,4 @@ export const checkInvalidKeys = <T>(obj: T, keys: Array<keyof T>): Array<keyof T
     }
   });
   return invalidKeys;
-}
+};

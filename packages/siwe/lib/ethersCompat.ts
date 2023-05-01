@@ -1,12 +1,10 @@
 import {
-  utils,
   // @ts-expect-error -- ethers v6 compatibility hack
   verifyMessage as ethersVerifyMessage,
-  // @ts-expect-error -- ethers v6 compatibility hack
   hashMessage as ethersHashMessage,
   // @ts-expect-error -- ethers v6 compatibility hack
   getAddress as ethersGetAddress,
-} from 'ethers';
+} from '@ethersproject/hash';
 
 type Ethers6BigNumberish = string | number | bigint;
 
@@ -36,16 +34,13 @@ type Ethers6SignatureLike =
       yParityAndS?: string;
     };
 
-export const verifyMessage =
-  utils?.verifyMessage ??
-  (ethersVerifyMessage as (
-    message: Uint8Array | string,
-    sig: Ethers6SignatureLike
-  ) => string);
+export const verifyMessage = ethersVerifyMessage as (
+  message: Uint8Array | string,
+  sig: Ethers6SignatureLike
+) => string;
 
-export const hashMessage =
-  utils?.hashMessage ??
-  (ethersHashMessage as (message: Uint8Array | string) => string);
+export const hashMessage = ethersHashMessage as (
+  message: Uint8Array | string
+) => string;
 
-export const getAddress =
-  utils?.getAddress ?? (ethersGetAddress as (address: string) => string);
+export const getAddress = ethersGetAddress as (address: string) => string;
