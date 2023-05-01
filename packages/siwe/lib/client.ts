@@ -1,38 +1,28 @@
-import { randomStringForEntropy } from "@stablelib/random";
 // TODO: Figure out how to get types from this lib:
-// import { Contract, ethers, utils } from 'ethers';
-import { Contract } from "@ethersproject/contracts";
-import { verifyMessage } from "@ethersproject/wallet";
 import {
-  Web3Provider,
-  JsonRpcSigner,
-  JsonRpcProvider,
-} from "@ethersproject/providers";
-import { hashMessage as ethersHashMessage } from "@ethersproject/hash";
-import { ParsedMessage, ParsedMessageRegExp } from "@spruceid/siwe-parser";
+  isEIP55Address,
+  ParsedMessage,
+  parseIntegerNumber,
+} from '@spruceid/siwe-parser';
+import * as providers from '@ethersproject/providers';
+import * as uri from 'valid-url';
 
-/**
- * Possible message error types.
- */
-export enum ErrorTypes {
-  /**Thrown when the `validate()` function can verify the message. */
-  INVALID_SIGNATURE = "Invalid signature.",
-  /**Thrown when the `expirationTime` is present and in the past. */
-  EXPIRED_MESSAGE = "Expired message.",
-  /**Thrown when some required field is missing. */
-  MALFORMED_SESSION = "Malformed session.",
-}
-
-/**@deprecated
- * Possible signature types that this library supports.
- *
- * This enum will be removed in future releases. And signature type will be
- * inferred from version.
- */
-export enum SignatureType {
-  /**EIP-191 signature scheme */
-  PERSONAL_SIGNATURE = "Personal signature",
-}
+import { getAddress, verifyMessage } from './ethersCompat';
+import {
+  SiweError,
+  SiweErrorType,
+  SiweResponse,
+  VerifyOpts,
+  VerifyOptsKeys,
+  VerifyParams,
+  VerifyParamsKeys,
+} from './types';
+import {
+  checkContractWalletSignature,
+  generateNonce,
+  checkInvalidKeys,
+  isValidISO8601Date,
+} from './utils';
 
 export class SiweMessage {
   /**RFC 4501 dns authority that is requesting the signing. */
@@ -55,7 +45,7 @@ export class SiweMessage {
    * characters. */
   nonce: string;
   /**ISO 8601 datetime string of the current time. */
-  issuedAt: string;
+  issuedAt?: string;
   /**ISO 8601 datetime string that, if present, indicates when the signed
    * authentication message is no longer valid. */
   expirationTime?: string;
@@ -69,20 +59,6 @@ export class SiweMessage {
    * resolved as part of authentication by the relying party. They are
    * expressed as RFC 3986 URIs separated by `\n- `. */
   resources?: Array<string>;
-  /**@deprecated
-   * Signature of the message signed by the wallet.
-   *
-   * This field will be removed in future releases, an additional parameter
-   * was added to the validate function were the signature goes to validate
-   * the message.
-   */
-  signature?: string;
-  /**@deprecated Type of sign message to be generated.
-   *
-   * This field will be removed in future releases and will rely on the
-   * message version
-   */
-  type?: SignatureType;
 
   /**
    * Creates a parsed Sign-In with Ethereum Message (EIP-4361) object from a
@@ -91,7 +67,7 @@ export class SiweMessage {
    * @param param {string | SiweMessage} Sign message as a string or an object.
    */
   constructor(param: string | Partial<SiweMessage>) {
-    if (typeof param === "string") {
+    if (typeof param === 'string') {
       const parsedMessage = new ParsedMessage(param);
       this.domain = parsedMessage.domain;
       this.address = parsedMessage.address;
@@ -107,50 +83,43 @@ export class SiweMessage {
       this.resources = parsedMessage.resources;
     } else {
       Object.assign(this, param);
-      if (typeof this.chainId === "string") {
-        this.chainId = parseInt(this.chainId);
+      if (typeof this.chainId === 'string') {
+        this.chainId = parseIntegerNumber(this.chainId);
       }
     }
-  }
-
-  /**
-   * Given a sign message (EIP-4361) returns the correct matching groups.
-   * @param message {string}
-   * @returns {RegExpExecArray} The matching groups for the message
-   */
-  regexFromMessage(message: string): RegExpExecArray {
-    const parsedMessage = new ParsedMessageRegExp(message);
-    return parsedMessage.match;
+    this.nonce = this.nonce || generateNonce();
+    this.validateMessage();
   }
 
   /**
    * This function can be used to retrieve an EIP-4361 formated message for
    * signature, although you can call it directly it's advised to use
-   * [signMessage()] instead which will resolve to the correct method based
+   * [prepareMessage()] instead which will resolve to the correct method based
    * on the [type] attribute of this object, in case of other formats being
    * implemented.
    * @returns {string} EIP-4361 formated message, ready for EIP-191 signing.
    */
   toMessage(): string {
+    /** Validates all fields of the object */
+    this.validateMessage();
+
     const header = `${this.domain} wants you to sign in with your Ethereum account:`;
     const uriField = `URI: ${this.uri}`;
-    let prefix = [header, this.address].join("\n");
+    let prefix = [header, this.address].join('\n');
     const versionField = `Version: ${this.version}`;
 
     if (!this.nonce) {
       this.nonce = generateNonce();
     }
 
-    const chainField = `Chain ID: ` + this.chainId || "1";
+    const chainField = `Chain ID: ` + this.chainId || '1';
 
     const nonceField = `Nonce: ${this.nonce}`;
 
     const suffixArray = [uriField, versionField, chainField, nonceField];
 
-    if (this.issuedAt) {
-      Date.parse(this.issuedAt);
-    }
-    this.issuedAt = this.issuedAt ? this.issuedAt : new Date().toISOString();
+    this.issuedAt = this.issuedAt || new Date().toISOString();
+
     suffixArray.push(`Issued At: ${this.issuedAt}`);
 
     if (this.expirationTime) {
@@ -169,37 +138,20 @@ export class SiweMessage {
 
     if (this.resources) {
       suffixArray.push(
-        [`Resources:`, ...this.resources.map((x) => `- ${x}`)].join("\n")
+        [`Resources:`, ...this.resources.map(x => `- ${x}`)].join('\n')
       );
     }
 
-    let suffix = suffixArray.join("\n");
-    prefix = [prefix, this.statement].join("\n\n");
+    const suffix = suffixArray.join('\n');
+    prefix = [prefix, this.statement].join('\n\n');
     if (this.statement) {
-      prefix += "\n";
+      prefix += '\n';
     }
-    return [prefix, suffix].join("\n");
-  }
-
-  /** @deprecated
-   * signMessage method is deprecated, use prepareMessage instead.
-   *
-   * This method parses all the fields in the object and creates a sign
-   * message according with the type defined.
-   * @returns {string} Returns a message ready to be signed according with the
-   * type defined in the object.
-   */
-  signMessage(): string {
-    console &&
-      console.warn &&
-      console.warn(
-        "signMessage method is deprecated, use prepareMessage instead."
-      );
-    return this.prepareMessage();
+    return [prefix, suffix].join('\n');
   }
 
   /**
-   * This method parses all the fields in the object and creates a sign
+   * This method parses all the fields in the object and creates a messaging for signing
    * message according with the type defined.
    * @returns {string} Returns a message ready to be signed according with the
    * type defined in the object.
@@ -207,7 +159,7 @@ export class SiweMessage {
   prepareMessage(): string {
     let message: string;
     switch (this.version) {
-      case "1": {
+      case '1': {
         message = this.toMessage();
         break;
       }
@@ -221,121 +173,286 @@ export class SiweMessage {
   }
 
   /**
-   * Validates the integrity of the fields of this objects by matching it's
-   * signature.
-   * @param provider A Web3 provider able to perform a contract check, this is
-   * required if support for Smart Contract Wallets that implement EIP-1271 is
-   * needed.
+   * @deprecated
+   * Verifies the integrity of the object by matching its signature.
+   * @param signature Signature to match the address in the message.
+   * @param provider Ethers provider to be used for EIP-1271 validation
+   */
+  async validate(signature: string, provider?: providers.Provider) {
+    console.warn(
+      'validate() has been deprecated, please update your code to use verify(). validate() may be removed in future versions.'
+    );
+    return this.verify({ signature }, { provider, suppressExceptions: false })
+      .then(({ data }) => data)
+      .catch(({ error }) => {
+        throw error;
+      });
+  }
+
+  /**
+   * Verifies the integrity of the object by matching its signature.
+   * @param params Parameters to verify the integrity of the message, signature is required.
    * @returns {Promise<SiweMessage>} This object if valid.
    */
-  async validate(
-    signature: string = this.signature,
-    provider?: Web3Provider | any
-  ): Promise<SiweMessage> {
-    return new Promise<SiweMessage>(async (resolve, reject) => {
-      const message = this.prepareMessage();
+  async verify(
+    params: VerifyParams,
+    opts: VerifyOpts = { suppressExceptions: false }
+  ): Promise<SiweResponse> {
+    return new Promise<SiweResponse>((resolve, reject) => {
+      const fail = result => {
+        if (opts.suppressExceptions) {
+          return resolve(result);
+        } else {
+          return reject(result);
+        }
+      };
+
+      const invalidParams: Array<keyof VerifyParams> =
+        checkInvalidKeys<VerifyParams>(params, VerifyParamsKeys);
+      if (invalidParams.length > 0) {
+        fail({
+          success: false,
+          data: this,
+          error: new Error(
+            `${invalidParams.join(
+              ', '
+            )} is/are not valid key(s) for VerifyParams.`
+          ),
+        });
+      }
+
+      const invalidOpts: Array<keyof VerifyOpts> = checkInvalidKeys<VerifyOpts>(
+        opts,
+        VerifyOptsKeys
+      );
+      if (invalidParams.length > 0) {
+        fail({
+          success: false,
+          data: this,
+          error: new Error(
+            `${invalidOpts.join(', ')} is/are not valid key(s) for VerifyOpts.`
+          ),
+        });
+      }
+
+      const { signature, domain, nonce, time } = params;
+
+      /** Domain binding */
+      if (domain && domain !== this.domain) {
+        fail({
+          success: false,
+          data: this,
+          error: new SiweError(
+            SiweErrorType.DOMAIN_MISMATCH,
+            domain,
+            this.domain
+          ),
+        });
+      }
+
+      /** Nonce binding */
+      if (nonce && nonce !== this.nonce) {
+        fail({
+          success: false,
+          data: this,
+          error: new SiweError(SiweErrorType.NONCE_MISMATCH, nonce, this.nonce),
+        });
+      }
+
+      /** Check time or now */
+      const checkTime = new Date(time || new Date());
+
+      /** Message not expired */
+      if (this.expirationTime) {
+        const expirationDate = new Date(this.expirationTime);
+        if (checkTime.getTime() >= expirationDate.getTime()) {
+          fail({
+            success: false,
+            data: this,
+            error: new SiweError(
+              SiweErrorType.EXPIRED_MESSAGE,
+              `${checkTime.toISOString()} < ${expirationDate.toISOString()}`,
+              `${checkTime.toISOString()} >= ${expirationDate.toISOString()}`
+            ),
+          });
+        }
+      }
+
+      /** Message is valid already */
+      if (this.notBefore) {
+        const notBefore = new Date(this.notBefore);
+        if (checkTime.getTime() < notBefore.getTime()) {
+          fail({
+            success: false,
+            data: this,
+            error: new SiweError(
+              SiweErrorType.NOT_YET_VALID_MESSAGE,
+              `${checkTime.toISOString()} >= ${notBefore.toISOString()}`,
+              `${checkTime.toISOString()} < ${notBefore.toISOString()}`
+            ),
+          });
+        }
+      }
+      let EIP4361Message;
       try {
-        let missing: Array<string> = [];
-        if (!message) {
-          missing.push("`message`");
-        }
+        EIP4361Message = this.prepareMessage();
+      } catch (e) {
+        fail({
+          success: false,
+          data: this,
+          error: e,
+        });
+      }
 
-        if (!signature) {
-          missing.push("`signature`");
-        }
-        if (!this.address) {
-          missing.push("`address`");
-        }
-        if (missing.length > 0) {
-          throw new Error(
-            `${ErrorTypes.MALFORMED_SESSION} missing: ${missing.join(", ")}.`
-          );
-        }
+      /** Recover address from signature */
+      let addr;
+      try {
+        addr = verifyMessage(EIP4361Message, signature);
+      } catch (e) {
+        console.error(e);
+      }
+      /** Match signature with message's address */
+      if (addr === this.address) {
+        return resolve({
+          success: true,
+          data: this,
+        });
+      } else {
+        const EIP1271Promise = checkContractWalletSignature(
+          this,
+          signature,
+          opts.provider
+        )
+          .then(isValid => {
+            if (!isValid) {
+              return {
+                success: false,
+                data: this,
+                error: new SiweError(
+                  SiweErrorType.INVALID_SIGNATURE,
+                  addr,
+                  `Resolved address to be ${this.address}`
+                ),
+              };
+            }
+            return {
+              success: true,
+              data: this,
+            };
+          })
+          .catch(error => {
+            return {
+              success: false,
+              data: this,
+              error,
+            };
+          });
 
-        let addr;
-        try {
-          addr = verifyMessage(message, signature);
-        } catch (_) {
-        } finally {
-          if (addr !== this.address) {
-            try {
-              //EIP-1271
-              const isValidSignature = await checkContractWalletSignature(
-                this,
-                signature,
-                provider
-              );
-              if (!isValidSignature) {
-                throw new Error(
-                  `${ErrorTypes.INVALID_SIGNATURE}: ${addr} !== ${this.address}`
-                );
-              }
-            } catch (e) {
-              throw e;
+        Promise.all([
+          EIP1271Promise,
+          opts
+            ?.verificationFallback?.(params, opts, this, EIP1271Promise)
+            ?.then(res => res)
+            ?.catch((res: SiweResponse) => res),
+        ]).then(([EIP1271Response, fallbackResponse]) => {
+          if (fallbackResponse) {
+            if (fallbackResponse.success) {
+              return resolve(fallbackResponse);
+            } else {
+              fail(fallbackResponse);
+            }
+          } else {
+            if (EIP1271Response.success) {
+              return resolve(EIP1271Response);
+            } else {
+              fail(EIP1271Response);
             }
           }
-        }
-
-        const parsedMessage = new SiweMessage(message);
-
-        if (parsedMessage.expirationTime) {
-          const exp = new Date(parsedMessage.expirationTime).getTime();
-          if (isNaN(exp)) {
-            throw new Error(
-              `${ErrorTypes.MALFORMED_SESSION} invalid expiration date.`
-            );
-          }
-          if (new Date().getTime() >= exp) {
-            throw new Error(ErrorTypes.EXPIRED_MESSAGE);
-          }
-        }
-        resolve(parsedMessage);
-      } catch (e) {
-        reject(e);
+        });
       }
     });
   }
+
+  /**
+   * Validates the values of this object fields.
+   * @throws Throws an {ErrorType} if a field is invalid.
+   */
+  private validateMessage(...args) {
+    /** Checks if the user might be using the function to verify instead of validate. */
+    if (args.length > 0) {
+      throw new SiweError(
+        SiweErrorType.UNABLE_TO_PARSE,
+        `Unexpected argument in the validateMessage function.`
+      );
+    }
+
+    /** `domain` check. */
+    if (
+      !this.domain ||
+      this.domain.length === 0 ||
+      !/[^#?]*/.test(this.domain)
+    ) {
+      throw new SiweError(
+        SiweErrorType.INVALID_DOMAIN,
+        `${this.domain} to be a valid domain.`
+      );
+    }
+
+    /** EIP-55 `address` check. */
+    if (!isEIP55Address(this.address)) {
+      throw new SiweError(
+        SiweErrorType.INVALID_ADDRESS,
+        getAddress(this.address),
+        this.address
+      );
+    }
+
+    /** Check if the URI is valid. */
+    if (!uri.isUri(this.uri)) {
+      throw new SiweError(
+        SiweErrorType.INVALID_URI,
+        `${this.uri} to be a valid uri.`
+      );
+    }
+
+    /** Check if the version is 1. */
+    if (this.version !== '1') {
+      throw new SiweError(
+        SiweErrorType.INVALID_MESSAGE_VERSION,
+        '1',
+        this.version
+      );
+    }
+
+    /** Check if the nonce is alphanumeric and bigger then 8 characters */
+    const nonce = this?.nonce?.match(/[a-zA-Z0-9]{8,}/);
+    if (!nonce || this.nonce.length < 8 || nonce[0] !== this.nonce) {
+      throw new SiweError(
+        SiweErrorType.INVALID_NONCE,
+        `Length > 8 (${nonce.length}). Alphanumeric.`,
+        this.nonce
+      );
+    }
+
+    /** `issuedAt` conforms to ISO-8601 and is a valid date. */
+    if (this.issuedAt) {
+      if (!isValidISO8601Date(this.issuedAt)) {
+        throw new Error(SiweErrorType.INVALID_TIME_FORMAT);
+      }
+    }
+
+    /** `expirationTime` conforms to ISO-8601 and is a valid date. */
+    if (this.expirationTime) {
+      if (!isValidISO8601Date(this.expirationTime)) {
+        throw new Error(SiweErrorType.INVALID_TIME_FORMAT);
+      }
+    }
+
+    /** `notBefore` conforms to ISO-8601 and is a valid date. */
+    if (this.notBefore) {
+      if (!isValidISO8601Date(this.notBefore)) {
+        throw new Error(SiweErrorType.INVALID_TIME_FORMAT);
+      }
+    }
+  }
 }
-
-/**
- * This method calls the EIP-1271 method for Smart Contract wallets
- * @param message The EIP-4361 parsed message
- * @param provider Web3 provider able to perform a contract check (Web3/EthersJS).
- * @returns {Promise<boolean>} Checks for the smart contract (if it exists) if
- * the signature is valid for given address.
- */
-export const checkContractWalletSignature = async (
-  message: SiweMessage,
-  signature: string,
-  provider?: any
-): Promise<boolean> => {
-  if (!provider) {
-    return false;
-  }
-
-  const abi = [
-    "function isValidSignature(bytes32 _message, bytes _signature) public view returns (bool)",
-  ];
-  try {
-    const walletContract = new Contract(message.address, abi, provider);
-    const hashMessage = ethersHashMessage(message.signMessage());
-    return await walletContract.isValidSignature(hashMessage, signature);
-  } catch (e) {
-    throw e;
-  }
-};
-
-/**
- * This method leverages a native CSPRNG with support for both browser and Node.js
- * environments in order generate a cryptographically secure nonce for use in the
- * SiweMessage in order to prevent replay attacks.
- *
- * 96 bits has been chosen as a number to sufficiently balance size and security considerations
- * relative to the lifespan of it's usage.
- *
- * @returns cryptographically generated random nonce with 96 bits of entropy encoded with
- * an alphanumeric character set.
- */
-export const generateNonce = (): string => {
-  return randomStringForEntropy(96);
-};
